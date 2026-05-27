@@ -1,0 +1,460 @@
+openapi: 3.0.0
+info:
+  title: Flask Multi Auth Example - API
+  description: |-
+    API REST de ejemplo con **multiples flujos de autenticacion**:
+
+    1. Registro y login clasico con email + password (passwords hasheados con bcrypt).
+    2. Olvido de password: el cliente pide un token de reseteo, la API lo genera y lo
+       devuelve para que el frontend envie el email; luego se confirma el cambio con
+       ese token.
+    3. Login passwordless: el cliente pide un codigo numerico de un solo uso, la API
+       lo genera y lo devuelve para que el frontend envie el email; luego se canjea
+       el codigo por un JWT.
+
+    Los endpoints publicos validan un **reCAPTCHA v2** contra Google antes de
+    ejecutar cualquier accion sensible. Los endpoints autenticados validan un JWT
+    enviado en el header `Authorization: Bearer <token>`.
+
+    Todos los endpoints cuelgan del prefijo `/flask_multi_auth_example_api`.
+  version: 1.0.0
+servers:
+  - url: http://localhost:5000/flask_multi_auth_example_api
+paths:
+  /register:
+    post:
+      summary: "Registrar un usuario nuevo"
+      tags:
+        - Auth
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistroBody'
+      responses:
+        '201':
+          description: "Usuario creado"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Usuario'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /login:
+    post:
+      summary: "Iniciar sesion con email + password y obtener un JWT"
+      tags:
+        - Auth
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginBody'
+      responses:
+        '200':
+          description: "Login exitoso"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /password-reset/request:
+    post:
+      summary: "Solicitar un token para resetear el password"
+      description: |-
+        Genera un token aleatorio, guarda su hash en la base con expiracion de
+        `PASSWORD_RESET_TOKEN_EXP_MIN` minutos y devuelve el **valor crudo** al
+        cliente. El frontend usa ese valor para armar el link del email y dispararlo.
+
+        Cuando se solicita un nuevo token, los anteriores vigentes del mismo usuario
+        se marcan automaticamente como usados.
+      tags:
+        - Password reset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailCaptchaBody'
+      responses:
+        '200':
+          description: "Token generado"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordResetRequestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /password-reset/confirm:
+    post:
+      summary: "Confirmar el cambio de password usando un token vigente"
+      tags:
+        - Password reset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConfirmBody'
+      responses:
+        '200':
+          description: "Password actualizado"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsuarioWrapper'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /login-code/request:
+    post:
+      summary: "Solicitar un codigo de un solo uso para login passwordless"
+      description: |-
+        Genera un codigo numerico de `LOGIN_CODE_LEN` digitos, guarda su hash en la
+        base con expiracion de `LOGIN_CODE_EXP_MIN` minutos y devuelve el **valor
+        crudo** al cliente. El frontend usa ese valor para mostrar el codigo en el
+        email.
+
+        Cuando se solicita un nuevo codigo, los anteriores vigentes del mismo
+        usuario se marcan automaticamente como usados.
+      tags:
+        - Login code (passwordless)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailCaptchaBody'
+      responses:
+        '200':
+          description: "Codigo generado"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginCodeRequestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /login-code/verify:
+    post:
+      summary: "Canjear un codigo por un JWT"
+      tags:
+        - Login code (passwordless)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginCodeVerifyBody'
+      responses:
+        '200':
+          description: "Login exitoso"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /me:
+    get:
+      summary: "Datos del usuario autenticado"
+      tags:
+        - Usuarios
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: "Usuario asociado al token enviado"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Usuario'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+components:
+  schemas:
+    Usuario:
+      type: object
+      description: "Informacion publica de un usuario (sin password_hash)"
+      required:
+        - id
+        - email
+        - nombre
+      properties:
+        id:
+          type: integer
+          example: 1
+        email:
+          type: string
+          format: email
+          example: "alice@example.com"
+        nombre:
+          type: string
+          example: "Alice"
+    UsuarioWrapper:
+      type: object
+      description: "Wrapper que contiene un usuario, usado como respuesta de algunos endpoints."
+      properties:
+        usuario:
+          $ref: '#/components/schemas/Usuario'
+    RecaptchaToken:
+      type: string
+      description: |-
+        Token resuelto por el widget reCAPTCHA v2 en el cliente (campo
+        `g-recaptcha-response` del form). La API lo valida contra Google.
+        Si `RECAPTCHA_DISABLED=true` en el `.env` de la API, este campo se
+        ignora (modo desarrollo).
+      example: "03AGdBq25..."
+    RegistroBody:
+      type: object
+      description: "Datos para registrar un usuario nuevo"
+      required:
+        - email
+        - nombre
+        - password
+        - recaptcha_token
+      properties:
+        email:
+          type: string
+          format: email
+          description: "Email valido y unico"
+          example: "alice@example.com"
+        nombre:
+          type: string
+          description: "Nombre del usuario (1-100 caracteres)"
+          minLength: 1
+          maxLength: 100
+          example: "Alice"
+        password:
+          type: string
+          format: password
+          description: "Password en texto plano (8-64 caracteres). Se guarda hasheado con bcrypt."
+          minLength: 8
+          maxLength: 64
+          example: "una-clave-secreta"
+        recaptcha_token:
+          $ref: '#/components/schemas/RecaptchaToken'
+    LoginBody:
+      type: object
+      description: "Credenciales para iniciar sesion"
+      required:
+        - email
+        - password
+        - recaptcha_token
+      properties:
+        email:
+          type: string
+          format: email
+          example: "alice@example.com"
+        password:
+          type: string
+          format: password
+          example: "una-clave-secreta"
+        recaptcha_token:
+          $ref: '#/components/schemas/RecaptchaToken'
+    LoginResponse:
+      type: object
+      description: "Token JWT y datos del usuario autenticado"
+      properties:
+        token:
+          type: string
+          description: "JWT firmado con HS256. Enviar en el header Authorization: Bearer <token>"
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        usuario:
+          $ref: '#/components/schemas/Usuario'
+    EmailCaptchaBody:
+      type: object
+      description: "Body con email + captcha, usado por los endpoints de request de reset / login-code"
+      required:
+        - email
+        - recaptcha_token
+      properties:
+        email:
+          type: string
+          format: email
+          example: "alice@example.com"
+        recaptcha_token:
+          $ref: '#/components/schemas/RecaptchaToken'
+    PasswordResetRequestResponse:
+      type: object
+      description: "Datos para que el frontend pueda armar y enviar el email de reset"
+      properties:
+        token:
+          type: string
+          description: |-
+            Token crudo (url-safe) que debe incluirse en el link del email.
+            En la base se guarda solo su hash SHA-256.
+          example: "Yzg5NjJjN2YtMmM0Mi00YjFh..."
+        expira_en:
+          type: string
+          format: date-time
+          description: "Momento en que el token deja de ser valido (UTC, ISO 8601)"
+          example: "2026-05-27T01:30:00+00:00"
+        usuario:
+          $ref: '#/components/schemas/Usuario'
+    PasswordResetConfirmBody:
+      type: object
+      description: "Token de reset + password nuevo"
+      required:
+        - token
+        - password
+      properties:
+        token:
+          type: string
+          description: "El mismo token crudo que se entrego en /password-reset/request"
+          example: "Yzg5NjJjN2YtMmM0Mi00YjFh..."
+        password:
+          type: string
+          format: password
+          description: "Nuevo password en texto plano (8-64 caracteres)"
+          minLength: 8
+          maxLength: 64
+          example: "nueva-clave-secreta"
+    LoginCodeRequestResponse:
+      type: object
+      description: "Datos para que el frontend pueda armar y enviar el email con el codigo"
+      properties:
+        codigo:
+          type: string
+          description: |-
+            Codigo numerico crudo (6 digitos) que debe mostrarse en el email.
+            En la base se guarda solo su hash SHA-256.
+          example: "473201"
+        expira_en:
+          type: string
+          format: date-time
+          description: "Momento en que el codigo deja de ser valido (UTC, ISO 8601)"
+          example: "2026-05-27T01:10:00+00:00"
+        usuario:
+          $ref: '#/components/schemas/Usuario'
+    LoginCodeVerifyBody:
+      type: object
+      description: "Email + codigo a canjear"
+      required:
+        - email
+        - codigo
+      properties:
+        email:
+          type: string
+          format: email
+          example: "alice@example.com"
+        codigo:
+          type: string
+          description: "Codigo recibido por email (6 digitos)"
+          minLength: 6
+          maxLength: 6
+          pattern: '^[0-9]{6}$'
+          example: "473201"
+    Errores:
+      type: object
+      properties:
+        errors:
+          type: array
+          description: "Listado de errores"
+          items:
+            $ref: '#/components/schemas/Error'
+    Error:
+      type: object
+      description: "Estructura de datos que contiene los detalles del error"
+      properties:
+        code:
+          type: string
+          description: |-
+            Codigo de error alfanumerico unico legible por humanos. Valores
+            posibles incluyen: `invalid.body`, `invalid.email.format`,
+            `invalid.credentials`, `email.already.registered`,
+            `recaptcha.missing`, `recaptcha.invalid`,
+            `reset.token.invalid`, `reset.token.expired`, `reset.token.used`,
+            `login.code.invalid`, `login.code.expired`, `login.code.used`,
+            `auth.token.missing`, `auth.token.invalid`, `auth.token.expired`,
+            `usuario.not.found`.
+          example: "invalid.credentials"
+        message:
+          type: string
+          description: "Breve resumen del problema reportado"
+          example: "Credenciales invalidas"
+        level:
+          type: string
+          description: "Nivel del problema reportado"
+          example: "error"
+          enum:
+            - info
+            - warning
+            - error
+        description:
+          type: string
+          description: "Descripcion detallada del problema reportado"
+          example: "El email o password son incorrectos"
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |-
+        JWT firmado con HS256 emitido por `POST /login` o `POST /login-code/verify`.
+        Enviar en el header `Authorization: Bearer <token>`. El payload contiene
+        `sub` (id del usuario) y `exp` (expiracion).
+  responses:
+    BadRequest:
+      description: |-
+        Bad Request. Causas comunes:
+        - Body invalido (campos faltantes, formato de email, longitud de password).
+        - Captcha invalido o faltante.
+        - Token de reset o login code invalido / expirado / ya usado.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Errores'
+    Unauthorized:
+      description: "Unauthorized (token JWT faltante, invalido o expirado, o credenciales invalidas en login)"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Errores'
+    NotFound:
+      description: |-
+        Not Found. En `/password-reset/request` y `/login-code/request` indica que
+        el email no esta registrado. El frontend deberia traducir este caso a un
+        mensaje neutro identico al de exito, para no filtrar la existencia de
+        cuentas.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Errores'
+    Conflict:
+      description: "Conflict (por ejemplo, email ya registrado en /register)"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Errores'
+    InternalServerError:
+      description: "Internal Server Error"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Errores'
